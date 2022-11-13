@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Rooms</title>
+</head>
+<body>
+{% if not rooms %}
+    <div>
+        <h1>No rooms yet</h1>
+    </div>
+{% endif %}
+{% for room in rooms %}
+    <div id="{{room}}">
+        Room: {{room}}
+    </div>
+{% end %}
+</body>
+</html>

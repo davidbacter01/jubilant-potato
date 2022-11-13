@@ -1,34 +1,108 @@
+#!/usr/bin/env python
+#
+# Copyright 2009 Facebook
+#
+# Licensed under the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License. You may obtain
+# a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+# License for the specific language governing permissions and limitations
+# under the License.
+"""Simplified chat demo for websockets.
+Authentication, error handling, etc. are left as an exercise for the reader :)
+"""
+
 import asyncio
-import os
 import logging
-from handlers import urls
+from typing import Optional, Awaitable
 
-from tornado.web import Application
-from tornado.options import define, options, parse_command_line
+import tornado.escape
+import tornado.options
+import tornado.web
+import tornado.websocket
+import os.path
+import uuid
 
-# options for running the server
+from tornado.options import define, options
+
 define("port", default=8888, help="run on the given port", type=int)
-define("debug", default=True, help="run in debug mode")
 
 
-def make_app():
-    _loger = logging.getLogger(__name__)
-    parse_command_line()
-    _loger.info(f"App started with options: {options}")
-    return Application(urls,
-                       cookie_secret="__TODO:_GENERATE_YOUR_OWN_RANDOM_VALUE_HERE__",
-                       template_path=os.path.join(os.path.dirname(__file__), "templates"),
-                       static_path=os.path.join(os.path.dirname(__file__), "static"),
-                       xsrf_cookies=True,
-                       debug=options.debug,
-                       )
+class Application(tornado.web.Application):
+    def __init__(self):
+        handlers = [(r"/", MainHandler), (r"/chatsocket", ChatSocketHandler)]
+        settings = dict(
+            cookie_secret="__TODO:_GENERATE_YOUR_OWN_RANDOM_VALUE_HERE__",
+            template_path=os.path.join(os.path.dirname(__file__), "templates"),
+            static_path=os.path.join(os.path.dirname(__file__), "static"),
+            xsrf_cookies=True,
+        )
+        super().__init__(handlers, **settings)
+
+
+class MainHandler(tornado.web.RequestHandler):
+    def data_received(self, chunk: bytes) -> Optional[Awaitable[None]]:
+        pass
+
+    def get(self):
+        self.render("index.html", messages=ChatSocketHandler.cache)
+
+
+class ChatSocketHandler(tornado.websocket.WebSocketHandler):
+    def data_received(self, chunk: bytes) -> Optional[Awaitable[None]]:
+        pass
+
+    waiters = set()
+    cache = []
+    cache_size = 200
+
+    def get_compression_options(self):
+        # Non-None enables compression with default options.
+        return {}
+
+    def open(self):
+        ChatSocketHandler.waiters.add(self)
+
+    def on_close(self):
+        ChatSocketHandler.waiters.remove(self)
+
+    @classmethod
+    def update_cache(cls, chat):
+        cls.cache.append(chat)
+        if len(cls.cache) > cls.cache_size:
+            cls.cache = cls.cache[-cls.cache_size:]
+
+    @classmethod
+    def send_updates(cls, chat):
+        logging.info("sending message to %d waiters", len(cls.waiters))
+        for waiter in cls.waiters:
+            try:
+                waiter.write_message(chat)
+            except Exception:
+                logging.error("Error sending message", exc_info=True)
+
+    def on_message(self, message):
+        logging.info("got message %r", message)
+        parsed = tornado.escape.json_decode(message)
+        chat = {"id": str(uuid.uuid4()), "body": parsed["body"]}
+        chat["html"] = tornado.escape.to_basestring(
+            self.render_string("message.html", message=chat)
+        )
+
+        ChatSocketHandler.update_cache(chat)
+        ChatSocketHandler.send_updates(chat)
 
 
 async def main():
-    app = make_app()
-    app.listen(8888)
-    shutdown_event = asyncio.Event()
-    await shutdown_event.wait()
+    tornado.options.parse_command_line()
+    app = Application()
+    app.listen(options.port)
+    await asyncio.Event().wait()
 
 
 if __name__ == "__main__":
